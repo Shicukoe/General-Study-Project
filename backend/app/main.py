@@ -1,20 +1,16 @@
 import sys
+import numpy as np
 from pathlib import Path
-
-# Add backend to Python path
-sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import numpy as np
 
-from app.dematel import normalize_matrix, total_influence_matrix, prominence_relation, simplify_matrix
-from app.danp import compute_danp_weights
-from app.schemas import MatrixInput
-from app.utils import validate_matrix
-from mangum import Mangum
+# Relative imports within app package
+from .dematel import normalize_matrix, total_influence_matrix, prominence_relation, simplify_matrix
+from .danp import compute_danp_weights
+from .schemas import MatrixInput
+from .utils import validate_matrix
 
-app = FastAPI(title="Hospitality Innovation DSS",root_path="/api")
+app = FastAPI(title="Hospitality Innovation DSS")
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,7 +68,5 @@ def analyze(data: MatrixInput):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-handler = Mangum(app)
 
 
