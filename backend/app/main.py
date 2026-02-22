@@ -11,7 +11,7 @@ from .schemas import MatrixInput
 from .utils import validate_matrix
 from mangum import Mangum
 
-app = FastAPI(title="Hospitality Innovation DSS")
+app = FastAPI(title="Hospitality Innovation DSS",root_path="/api")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,11 +25,11 @@ app.add_middleware(
 def read_root():
     return {"message": "Backend is running!"}
 
-@app.get("/api/health")
+@app.get("/health")
 def health_check():
     return {"status": "healthy"}
 
-@app.post("/api/analyze")
+@app.post("/analyze")
 def analyze(data: MatrixInput):
     try:
         A = np.array(data.matrix)

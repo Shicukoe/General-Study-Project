@@ -3,5 +3,5 @@
   "outputDirectory": "frontend/dist",
   "installCommand": "cd frontend && npm install",
   "rewrites": [
-        { "source": "/api/:path*", "destination": "api/index.py" }  ]
+        { "source": "/api/(.*)", "destination": "api/index.py" }  ]
 }
