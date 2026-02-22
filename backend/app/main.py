@@ -25,11 +25,11 @@ app.add_middleware(
 def read_root():
     return {"message": "Backend is running!"}
 
-@app.get("/health")
+@app.get("/api/health")
 def health_check():
     return {"status": "healthy"}
 
-@app.post("/analyze")
+@app.post("/api/analyze")
 def analyze(data: MatrixInput):
     try:
         A = np.array(data.matrix)
