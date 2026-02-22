@@ -62,3 +62,7 @@ def analyze(data: MatrixInput):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Calculation error: {str(e)}")
+
+from mangum import Mangum
+
+handler = Mangum(app)
