@@ -1,5 +1,10 @@
 {
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/dist",
-  "installCommand": "cd frontend && npm install"
+  "installCommand": "cd frontend && npm install",
+  "env": {
+    "VITE_API_URL": "@api_url"
+  },
+  "envPrefix": "VITE_",
+  "nodeVersion": "20.x"
 }
