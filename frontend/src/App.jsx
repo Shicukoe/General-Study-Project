@@ -743,7 +743,8 @@ function App() {
   const handleAnalyze = async () => {
     setLoading(true);
     try {
-      const res = await axios.post("http://127.0.0.1:8000/analyze", { matrix, labels });
+      const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+      const res = await axios.post(`${apiUrl}/analyze`, { matrix, labels });
       setResult(res.data);
     } catch (err) {
       alert(err.response?.data?.detail ?? "Backend connection error. Make sure FastAPI is running.");
