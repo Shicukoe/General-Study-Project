@@ -1,7 +1,7 @@
 import sys
 import numpy as np
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, APIRouter
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 # Relative imports within app package
@@ -9,7 +9,6 @@ from .dematel import normalize_matrix, total_influence_matrix, prominence_relati
 from .danp import compute_danp_weights
 from .schemas import MatrixInput
 from .utils import validate_matrix
-from mangum import Mangum
 
 app = FastAPI(title="Hospitality Innovation DSS")
 
@@ -20,8 +19,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-api_router = APIRouter(prefix="/api")
 
 @app.get("/")
 def read_root():
@@ -73,4 +70,3 @@ def analyze(data: MatrixInput):
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
-app.include_router(api_router)
