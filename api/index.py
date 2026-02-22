@@ -4,12 +4,19 @@ Wraps FastAPI app with Mangum for AWS Lambda/Vercel compatibility
 """
 import sys
 import os
+from pathlib import Path
 
-# Add backend to Python path so we can import app modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
+# Get project root and add backend to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root / 'backend'))
 
-from mangum import Mangum
-from app.main import app
+try:
+    from mangum import Mangum
+    from app.main import app
+    
+    # Wrap FastAPI app with Mangum for serverless ASGI
+    handler = Mangum(app, lifespan="off")
+except ImportError as e:
+    print(f"Import error: {e}")
+    raise
 
-# Wrap FastAPI app with Mangum for serverless
-handler = Mangum(app)
