@@ -1,16 +1,14 @@
-"""
-Vercel Serverless Function Handler
-Wraps FastAPI app with Mangum for serverless
-"""
 import sys
 import os
+from pathlib import Path
 
 # Add backend to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backend'))
+backend_path = str(Path(__file__).parent.parent / "backend")
+sys.path.insert(0, backend_path)
 
-from mangum import Mangum
+# Import and expose FastAPI app directly
 from app.main import app
 
-# Wrap FastAPI app with Mangum for serverless ASGI
-handler = Mangum(app, lifespan="off")
+# Vercel Python runtime will auto-detect this as ASGI app
+
 
