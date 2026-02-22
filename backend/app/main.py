@@ -14,7 +14,7 @@ from app.schemas import MatrixInput
 from app.utils import validate_matrix
 from mangum import Mangum
 
-app = FastAPI(title="Hospitality Innovation DSS")
+app = FastAPI(title="Hospitality Innovation DSS",root_path="/api")
 
 app.add_middleware(
     CORSMiddleware,
