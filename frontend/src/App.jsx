@@ -743,7 +743,7 @@ function App() {
   const handleAnalyze = async () => {
     setLoading(true);
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+      const apiUrl = import.meta.env.VITE_API_URL || "/api";
       const res = await axios.post(`${apiUrl}/analyze`, { matrix, labels });
       setResult(res.data);
     } catch (err) {
