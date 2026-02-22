@@ -7,9 +7,9 @@ if backend_path not in sys.path:
     sys.path.insert(0, backend_path)
 
 from mangum import Mangum
-from app.main import app
+from backend.app.main import handler
 
 # Wrap with Mangum for serverless ASGI support
-handler = Mangum(app)
+handler = Mangum(handler)
 
 
