@@ -4,7 +4,7 @@
   "installCommand": "cd frontend && npm install",
   "functions": {
     "api/index.py": {
-      "runtime": "python3.10"
+      "runtime": "python@3.10"
     }
   }
 }
