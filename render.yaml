@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: general-study-dss
+    runtime: python
+    buildCommand: pip install -r requirements.txt && cd frontend && npm install && npm run build
+    startCommand: python backend/run.py
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: true
