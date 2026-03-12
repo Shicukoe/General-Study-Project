@@ -64,6 +64,13 @@ From `backend`:
 python -m venv venv      # if needed
 & .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+
+#Download Ollama for NLP features:
+irm https://ollama.com/install.ps1 | iex
+olama pull llama3
+pip install httpx
+pip install pydantic
+
 pytest test_cases.py -q
 ```
 
@@ -72,6 +79,7 @@ Run a single class or test:
 ```powershell
 pytest test_cases.py::TestEndToEndAnalysis::test_complete_pipeline_8x8 -q
 ```
+
 
 Coverage (optional):
 
@@ -85,6 +93,5 @@ Notes
 - Maintain ~1–2 test files per area; add small helper test files only when needed.
 
 ````
-  - Quick reference commands
 
 

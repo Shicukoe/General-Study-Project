@@ -1,813 +1,567 @@
 import { useState, useRef, useEffect } from "react";
 import axios from "axios";
-import {
-  ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
-  RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
-} from "recharts";
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const DIMENSIONS_4X4 = [
-  "Tangible assets",
-  "Intangible assets",
-  "Personal ability",
-  "Organizational ability",
-];
-
-const DIMENSIONS_8X8 = [
-  "Physical resources",
-  "Financial resources",
-  "Brand/business reputation resources",
-  "Technical resources",
-  "Relationship resources",
-  "Marketing resources",
-  "Human resources",
-  "Organizational resources",
-];
-
-const EXAMPLE_4X4 = {
-  mode: "4x4",
-  labels: DIMENSIONS_4X4,
-  matrix: [
-    [0,   3.5, 2,   2  ],
-    [3.4, 0,   3.4, 3.4],
-    [2,   4,   0,   3  ],
-    [3.5, 3.5, 2,   0  ],
-  ],
-};
-
-const EXAMPLE_8X8 = {
-  mode: "8x8",
-  labels: DIMENSIONS_8X8,
-  matrix: [
-    [0, 1, 3, 4, 3, 3, 2, 4],
-    [4, 0, 4, 1, 1, 4, 4, 4],
-    [1, 4, 0, 0, 4, 4, 4, 4],
-    [3, 2, 4, 0, 4, 2, 1, 4],
-    [4, 1, 4, 3, 0, 2, 4, 1],
-    [4, 4, 3, 4, 3, 0, 1, 4],
-    [1, 4, 4, 4, 2, 4, 0, 3],
-    [4, 4, 3, 4, 0, 4, 4, 0],
-  ],
-};
-
-/** Indicator → dimension mapping used in Table 11. */
-const DIM_GROUPS = [
-  { dim: "Tangible assets",        indicators: ["Physical resources"] },
-  { dim: "Intangible assets",      indicators: ["Financial resources", "Brand/business reputation resources", "Technical resources", "Relationship resources", "Marketing resources"] },
-  { dim: "Personal ability",       indicators: ["Human resources"] },
-  { dim: "Organizational ability", indicators: ["Organizational resources"] },
-];
-
-/** Canonical indicator order for Table 11 columns and Figure 3 radar axis. */
-const INDICATOR_ORDER = DIM_GROUPS.flatMap((g) => g.indicators);
-
-/** ScatterChart canvas dimensions and margins. */
-const CHART = { W: 670, H: 450, ML: 20, MT: 20, MR: 20, MB: 40 };
-
-// ─── Exact arrow pairs for Figure 2 (8×8) ───────────────────────────────────
-
-/** 7 black one-way arrows from paper Figure 2 with per-arc curve offsets (px). */
-const BLACK_PAIRS_8X8 = [
-  { from: "Relationship resources",              to: "Brand/business reputation resources", curve: 130  },
-  { from: "Technical resources",                 to: "Brand/business reputation resources", curve: 500  },
-  { from: "Human resources",                     to: "Technical resources",                  curve: 50   },
-  { from: "Financial resources",                 to: "Physical resources",                   curve: -40  },
-  { from: "Financial resources",                 to: "Marketing resources",                  curve: 40   },
-  { from: "Organizational resources",            to: "Technical resources",                  curve: -50  },
-  { from: "Physical resources",                  to: "Brand/business reputation resources",  curve: 140  },
-];
-
-/** 11 red two-way arrows from paper Figure 2 with per-arc curve offsets (px). */
-const RED_PAIRS_8X8 = [
-  // Inner cluster — 3 causes × 2 non-sink effects
-  { from: "Human resources",                     to: "Physical resources",               curve:   15 },
-  { from: "Human resources",                     to: "Organizational resources",          curve: -150 },
-  { from: "Financial resources",                 to: "Physical resources",               curve:    0 },
-  { from: "Financial resources",                 to: "Organizational resources",          curve: -100 },
-  { from: "Marketing resources",                 to: "Physical resources",               curve:  -15 },
-  { from: "Marketing resources",                 to: "Organizational resources",          curve:  -10 },
-  // Brand (sink) ↔ causes — large sweeping curves
-  { from: "Brand/business reputation resources", to: "Human resources",                  curve: -180 },
-  { from: "Brand/business reputation resources", to: "Financial resources",              curve: -140 },
-  { from: "Brand/business reputation resources", to: "Marketing resources",              curve:  200 },
-  // Brand (sink) ↔ non-sink effects
-  { from: "Brand/business reputation resources", to: "Physical resources",               curve: -220 },
-  { from: "Brand/business reputation resources", to: "Organizational resources",          curve:  200 },
-];
-
-// ─── Pure Utility Functions ───────────────────────────────────────────────────
-
-/**
- * Returns a white → deep-orange color based on value/maxVal ratio.
- * Used for the total-influence matrix heatmap.
- */
-function getHeatmapColor(val, maxVal) {
-  if (val === 0 || maxVal === 0) return "#ffffff";
-  const ratio = val / maxVal;
-  const g = Math.round(255 - ratio * (255 - 81));
-  const b = Math.round(255 - ratio * 255);
-  return `rgb(255,${g},${b})`;
-}
-
-/**
- * Computes the quadratic bezier control point via a perpendicular offset at the
- * midpoint of the line from (x1,y1) to (x2,y2).
- * @param {number} offset - positive curves "right" of the from→to direction.
- */
-function bezierCP(x1, y1, x2, y2, offset) {
-  const mx = (x1 + x2) / 2;
-  const my = (y1 + y2) / 2;
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const len = Math.sqrt(dx * dx + dy * dy) || 1;
-  return { cpx: mx + (-dy / len) * offset, cpy: my + (dx / len) * offset };
-}
-
-/**
- * Builds the SVG polygon `points` string for an arrowhead tip at (tipX, tipY)
- * pointing along `angle` radians.
- */
-function arrowHead(tipX, tipY, angle, aLen, aWid) {
-  const p1x = tipX - aLen * Math.cos(angle) + aWid * Math.sin(angle);
-  const p1y = tipY - aLen * Math.sin(angle) - aWid * Math.cos(angle);
-  const p2x = tipX - aLen * Math.cos(angle) - aWid * Math.sin(angle);
-  const p2y = tipY - aLen * Math.sin(angle) + aWid * Math.cos(angle);
-  return `${tipX},${tipY} ${p1x},${p1y} ${p2x},${p2y}`;
-}
-
-/**
- * Builds the complete list of arrow line descriptors for the cause-effect diagram.
- *
- * For 8×8: uses the hardcoded paper-exact pairs (BLACK_PAIRS_8X8, RED_PAIRS_8X8).
- * For 4×4: uses a generic algorithm (cause chain + sink + red two-way).
- *
- * @param {Array}  scatterData  - [{ name, prominence, relation, type }, ...]
- * @param {Object} dotPositions - { [name]: { cx, cy } } pixel positions from recharts
- * @param {string} matrixMode   - "4x4" | "8x8"
- * @returns {Array} lines - [{ x1, y1, x2, y2, color, twoWay, curve, key }, ...]
- */
-function buildArrowLines(scatterData, dotPositions, matrixMode) {
-  const DOT_OFFSET = 7; // px clearance from dot centre
-  const curveScale = matrixMode === "8x8" ? 0.3 : 0;
-
-  const lines = [];
-  const byName = (name) => scatterData.find((d) => d.name === name);
-
-  const addLine = (from, to, color, twoWay, curve = 0) => {
-    const p1 = dotPositions[from.name];
-    const p2 = dotPositions[to.name];
-    if (!p1 || !p2) return;
-    const dx = p2.cx - p1.cx;
-    const dy = p2.cy - p1.cy;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    if (len < 2) return;
-    lines.push({
-      x1: p1.cx + (dx / len) * DOT_OFFSET,
-      y1: p1.cy + (dy / len) * DOT_OFFSET,
-      x2: p2.cx - (dx / len) * DOT_OFFSET,
-      y2: p2.cy - (dy / len) * DOT_OFFSET,
-      color, twoWay, curve,
-      key: `arr-${from.name}-${to.name}`,
-    });
-  };
-
-  if (matrixMode === "8x8") {
-    // ── Figure 2: hardcoded 7 black + 11 red pairs from paper ─────────────
-    BLACK_PAIRS_8X8.forEach(({ from, to, curve }) => {
-      const f = byName(from), t = byName(to);
-      if (f && t) addLine(f, t, "#000000", false, curve * curveScale);
-    });
-    RED_PAIRS_8X8.forEach(({ from, to, curve }) => {
-      const f = byName(from), t = byName(to);
-      if (f && t) addLine(f, t, "#d32f2f", true, curve * curveScale);
-    });
-  } else {
-    // ── Figure 1: generic 4×4 algorithm ───────────────────────────────────
-    // Sort causes descending by relation; effects ascending (most-negative = sink)
-    const causes = [...scatterData.filter((d) => d.type === "Cause")]
-      .sort((a, b) => b.relation - a.relation);
-    const effects = [...scatterData.filter((d) => d.type === "Effect")]
-      .sort((a, b) => a.relation - b.relation);
-
-    // Black: cause chain (descending relation) then lowest-cause → sink-effect
-    for (let i = 0; i < causes.length - 1; i++) {
-      addLine(causes[i], causes[i + 1], "#000000", false, 0);
-    }
-    if (causes.length > 0 && effects.length > 0) {
-      addLine(causes[causes.length - 1], effects[0], "#000000", false, 0);
-    }
-
-    // Red two-way: all causes ↔ non-sink effects; sink ↔ non-sink effects
-    for (let ei = 1; ei < effects.length; ei++) {
-      causes.forEach((cause) => addLine(cause, effects[ei], "#d32f2f", true, 0));
-    }
-    for (let ei = 1; ei < effects.length; ei++) {
-      addLine(effects[0], effects[ei], "#d32f2f", true, 0);
-    }
-  }
-
-  return lines;
-}
-
-// ─── Sub-Components ───────────────────────────────────────────────────────────
-
-/** Mode toggle (4×4 / 8×8) and Reset button bar. */
-function ModeSelector({ matrixMode, onModeChange, onReset }) {
-  const btnStyle = {
-    padding: "8px 16px", cursor: "pointer",
-    border: "1px solid #000", fontFamily: "Times New Roman", fontSize: 14,
-  };
-  return (
-    <div style={{ textAlign: "center", marginBottom: "20px" }}>
-      <button onClick={() => onModeChange("4x4")} className={matrixMode === "4x4" ? "active" : ""}>
-        4×4 Dimensions
-      </button>
-      <button onClick={() => onModeChange("8x8")} className={matrixMode === "8x8" ? "active" : ""}>
-        8×8 Indicators
-      </button>
-      <button onClick={onReset} style={{ ...btnStyle, marginLeft: "20px" }}>
-        Reset
-      </button>
-    </div>
-  );
-}
-
-/** JSON paste area with Load Example and Import buttons. */
-function JsonImportPanel({ jsonInput, onChange, onLoadExample, onImport }) {
-  const btnStyle = {
-    padding: "8px 16px", cursor: "pointer",
-    border: "1px solid #000", fontFamily: "Times New Roman", fontSize: 14,
-  };
-  return (
-    <div style={{ border: "1px solid #000", padding: "15px", marginBottom: "20px" }}>
-      <h2>Import from JSON (Optional)</h2>
-      <textarea
-        value={jsonInput}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Paste JSON or load an example from the buttons below..."
-        style={{
-          width: "100%", height: "150px",
-          fontFamily: "monospace", fontSize: 11,
-          padding: "8px", border: "1px solid #ccc",
-        }}
-      />
-      <div style={{ marginTop: "10px", textAlign: "center" }}>
-        <button onClick={() => onLoadExample(EXAMPLE_4X4)} style={{ ...btnStyle, marginRight: "10px" }}>
-          Load Example 4×4
-        </button>
-        <button onClick={() => onLoadExample(EXAMPLE_8X8)} style={{ ...btnStyle, marginRight: "10px" }}>
-          Load Example 8×8
-        </button>
-        <button onClick={onImport} style={{ ...btnStyle, backgroundColor: "#f0f0f0" }}>
-          Import from JSON
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** Editable direct-influence matrix table with Analyze button. */
-function MatrixInputTable({ labels, matrix, onChange, onAnalyze, loading }) {
-  return (
-    <div style={{ border: "1px solid #000", padding: "15px", marginBottom: "20px" }}>
-      <h2>Direct Influence Matrix (Input)</h2>
-      <div style={{ overflowX: "auto" }}>
-        <table>
-          <thead>
-            <tr>
-              <th></th>
-              {labels.map((label, j) => <th key={j}>{label}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {matrix.map((row, i) => (
-              <tr key={i}>
-                <td style={{ fontWeight: "bold" }}>{labels[i]}</td>
-                {row.map((val, j) => (
-                  <td key={j} style={{ backgroundColor: i === j ? "#f5f5f5" : "white" }}>
-                    {i === j ? (
-                      <span style={{ color: "#999" }}>0</span>
-                    ) : (
-                      <input
-                        type="number" min="0" max="4" step="1" value={val}
-                        onChange={(e) => onChange(i, j, e.target.value)}
-                      />
-                    )}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div style={{ textAlign: "center", marginTop: "15px" }}>
-        <button onClick={onAnalyze} disabled={loading}>
-          {loading ? "Processing..." : "Analyze"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** Heatmap-colored simplified total-influence matrix (Table 2 / Table 3). */
-function TotalInfluenceTable({ labels, result, matrixMode }) {
-  const simplified = result.simplified_total_influence_matrix ?? result.total_influence_matrix;
-  const maxVal     = Math.max(...result.total_influence_matrix.flat());
-  const decimals   = matrixMode === "4x4" ? 3 : 4;
-  const tableNum   = matrixMode === "4x4" ? "2" : "3";
-  const subject    = matrixMode === "4x4" ? "dimensions" : "indicators";
-
-  return (
-    <div style={{ border: "1px solid #000", padding: "15px", marginBottom: "20px" }}>
-      <h2>Table {tableNum}: List of simplified total influence-relation matrices of the {subject}.</h2>
-
-      {/* Heatmap legend */}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px", fontSize: 12, fontFamily: "Times New Roman" }}>
-        <span>Low</span>
-        <div style={{ width: 160, height: 14, background: "linear-gradient(to right, #ffffff, #e65100)", border: "1px solid #ccc" }} />
-        <span>High influence</span>
-        <span style={{ marginLeft: 20, color: "#888" }}>(α = mean(T); cells below α zeroed)</span>
-      </div>
-
-      <div style={{ overflowX: "auto" }}>
-        <table>
-          <thead>
-            <tr>
-              <th></th>
-              {labels.map((label, j) => <th key={j}>{label}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {simplified.map((row, i) => (
-              <tr key={i}>
-                <td style={{ fontWeight: "bold" }}>{labels[i]}</td>
-                {row.map((val, j) => (
-                  <td
-                    key={j}
-                    style={{
-                      backgroundColor: getHeatmapColor(val, maxVal),
-                      color: val === 0 ? "#bbb" : "#000",
-                      textAlign: "center", padding: "4px 8px",
-                    }}
-                  >
-                    {val.toFixed(decimals)}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/** D / R / D+R / D−R summary table with Cause/Effect role column. */
-function ProminenceRelationTable({ labels, result, matrixMode }) {
-  return (
-    <div style={{ border: "1px solid #000", padding: "15px", marginBottom: "20px" }}>
-      <h2>Prominence and Relation Summary ({matrixMode === "4x4" ? "Dimensions" : "Indicators"})</h2>
-      <p style={{ fontSize: 12, color: "#555", margin: "0 0 10px 0" }}>
-        D = row sum of T (influence given) &nbsp;|&nbsp;
-        R = column sum of T (influence received) &nbsp;|&nbsp;
-        D+R = Prominence (overall impact) &nbsp;|&nbsp;
-        D−R = Relation &gt; 0 → Cause, &lt; 0 → Effect
-      </p>
-      <div style={{ overflowX: "auto" }}>
-        <table>
-          <thead>
-            <tr>
-              <th></th>
-              <th>D</th>
-              <th>R</th>
-              <th>D+R (Prominence)</th>
-              <th>D−R (Relation)</th>
-              <th>Role</th>
-            </tr>
-          </thead>
-          <tbody>
-            {labels.map((label, i) => {
-              const d_i       = result.d ? result.d[i] : (result.prominence[i] + result.relation[i]) / 2;
-              const r_i       = result.r ? result.r[i] : (result.prominence[i] - result.relation[i]) / 2;
-              const isCause   = result.relation[i] > 0;
-              const roleColor = isCause ? "#d32f2f" : "#1e88e5";
-              return (
-                <tr key={i}>
-                  <td style={{ fontWeight: "bold" }}>{label}</td>
-                  <td>{d_i.toFixed(4)}</td>
-                  <td>{r_i.toFixed(4)}</td>
-                  <td>{result.prominence[i].toFixed(4)}</td>
-                  <td style={{ color: roleColor }}>{result.relation[i].toFixed(4)}</td>
-                  <td style={{ fontWeight: "bold", color: roleColor }}>
-                    {isCause ? "Cause" : "Effect"}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/**
- * SVG overlay rendered absolutely over the recharts ScatterChart.
- * Reads pre-captured pixel positions from dotPositions and renders bezier
- * arrows with forward (and optionally reverse) arrowheads.
- */
-function ArrowOverlay({ scatterData, dotPositions, matrixMode }) {
-  if (Object.keys(dotPositions).length === 0) return null;
-
-  const lines = buildArrowLines(scatterData, dotPositions, matrixMode);
-  const aLen  = 9;
-  const aWid  = 4;
-
-  return (
-    <svg
-      style={{
-        position: "absolute", top: 0, left: 0,
-        width: CHART.W, height: CHART.H,
-        pointerEvents: "none",
-      }}
-    >
-      {lines.map((l) => {
-        const { cpx, cpy } = bezierCP(l.x1, l.y1, l.x2, l.y2, l.curve);
-        const angleEnd     = Math.atan2(l.y2 - cpy, l.x2 - cpx);
-        const angleStart   = Math.atan2(l.y1 - cpy, l.x1 - cpx);
-
-        // Pull endpoints back so arrowheads sit exactly on dot edges
-        const ex2 = l.x2 - aLen * Math.cos(angleEnd)   * 0.8;
-        const ey2 = l.y2 - aLen * Math.sin(angleEnd)   * 0.8;
-        const ex1 = l.twoWay ? l.x1 - aLen * Math.cos(angleStart) * 0.8 : l.x1;
-        const ey1 = l.twoWay ? l.y1 - aLen * Math.sin(angleStart) * 0.8 : l.y1;
-        const { cpx: cp2, cpy: cp2y } = bezierCP(ex1, ey1, ex2, ey2, l.curve);
-
-        return (
-          <g key={l.key}>
-            <path
-              d={`M ${ex1} ${ey1} Q ${cp2} ${cp2y} ${ex2} ${ey2}`}
-              stroke={l.color} strokeWidth={1.5} fill="none"
-            />
-            {/* Forward arrowhead */}
-            <polygon points={arrowHead(l.x2, l.y2, angleEnd, aLen, aWid)} fill={l.color} />
-            {/* Reverse arrowhead (two-way only) */}
-            {l.twoWay && (
-              <polygon points={arrowHead(l.x1, l.y1, angleStart, aLen, aWid)} fill={l.color} />
-            )}
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-/**
- * Cause-and-effect scatter diagram (Figure 1 / Figure 2) with SVG arrow overlay.
- * Exact dot pixel positions are captured from recharts through the shape callback
- * and stored in dotPositionsRef / dotPositions for use by ArrowOverlay.
- */
-function CauseEffectDiagram({ scatterData, matrixMode, dotPositionsRef, dotPositions, setDotPositions }) {
-  const xValues  = scatterData.map((d) => d.prominence);
-  const yValues  = scatterData.map((d) => d.relation);
-  const xDomMin  = Math.floor((Math.min(...xValues) - 0.5) * 10) / 10;
-  const xDomMax  = Math.ceil( (Math.max(...xValues) + 0.5) * 10) / 10;
-  const yDomMin  = Math.floor((Math.min(...yValues) - 0.2) * 10) / 10;
-  const yDomMax  = Math.ceil( (Math.max(...yValues) + 0.2) * 10) / 10;
-
-  const figNum     = matrixMode === "4x4" ? "1" : "2";
-  const figSubject = matrixMode === "4x4" ? "Dimension" : "Indicator";
-
-  return (
-    <div style={{ border: "1px solid #000", padding: "15px", marginBottom: "20px" }}>
-      <h2>
-        Figure {figNum}: {figSubject} cause-and-effect graph for the core resources
-        and impact indicators of the affiliated restaurants' development
-      </h2>
-      <div style={{ display: "flex", justifyContent: "center", overflowX: "auto", marginTop: "15px" }}>
-        <div style={{ position: "relative", display: "inline-block" }}>
-
-          <ScatterChart
-            width={CHART.W} height={CHART.H}
-            margin={{ top: CHART.MT, right: CHART.MR, left: CHART.ML, bottom: CHART.MB }}
-            style={{ userSelect: "none" }}
-          >
-            <CartesianGrid stroke="#ddd" strokeDasharray="3 3" />
-            <XAxis
-              type="number" dataKey="prominence" name="d+r"
-              label={{ value: "d+r", position: "insideBottomRight", offset: -5, style: { fontFamily: "Times New Roman", fontSize: 12 } }}
-              domain={[xDomMin, xDomMax]}
-              tick={{ fontFamily: "Times New Roman", fontSize: 11 }}
-              tickFormatter={(v) => v.toFixed(1)}
-            />
-            <YAxis
-              type="number" dataKey="relation" name="d-r"
-              label={{ value: "d-r", angle: -90, position: "insideLeft", style: { fontFamily: "Times New Roman", fontSize: 12 } }}
-              domain={[yDomMin, yDomMax]}
-              tick={{ fontFamily: "Times New Roman", fontSize: 11 }}
-              tickFormatter={(v) => v.toFixed(1)}
-            />
-            <Tooltip
-              content={({ active, payload }) => {
-                if (!active || !payload?.length) return null;
-                const d = payload[0].payload;
-                return (
-                  <div style={{ backgroundColor: "#fff", padding: "8px", border: "1px solid #000", fontFamily: "Times New Roman", fontSize: 11 }}>
-                    <div style={{ fontWeight: "bold" }}>{d.name}</div>
-                    <div>{d.prominence.toFixed(4)}, {d.relation.toFixed(4)}</div>
-                    <div style={{ color: d.fill }}>{d.type}</div>
-                  </div>
-                );
-              }}
-            />
-            <ReferenceLine y={0} stroke="#000" strokeWidth={1} />
-            <Scatter
-              data={scatterData}
-              shape={(props) => {
-                const { cx, cy, payload } = props;
-                if (!payload || cx == null || cy == null) return null;
-
-                // Capture exact recharts pixel position for the arrow overlay
-                const prev = dotPositionsRef.current[payload.name];
-                if (!prev || prev.cx !== cx || prev.cy !== cy) {
-                  dotPositionsRef.current[payload.name] = { cx, cy };
-                  setTimeout(() => setDotPositions({ ...dotPositionsRef.current }), 0);
-                }
-
-                return (
-                  <g>
-                    <circle cx={cx} cy={cy} r={5} fill={payload.fill} stroke="#000" strokeWidth={1} />
-                    <text x={cx + 8} y={cy - 8} fill={payload.fill} fontSize={10} fontFamily="Times New Roman">
-                      {payload.name} {payload.type}
-                    </text>
-                    <text x={cx + 8} y={cy + 3} fill="#000" fontSize={9} fontFamily="Times New Roman">
-                      {payload.prominence.toFixed(4)}, {payload.relation.toFixed(4)}
-                    </text>
-                  </g>
-                );
-              }}
-            />
-          </ScatterChart>
-
-          <ArrowOverlay
-            scatterData={scatterData}
-            dotPositions={dotPositions}
-            matrixMode={matrixMode}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Table 11: indicator extreme supermatrix weight table with dimension rowspan grouping. */
-function WeightRankingTable({ result }) {
-  if (!result?.ranking) return null;
-
-  const priorityMap = {};
-  result.ranking.forEach((item, idx) => { priorityMap[item[0]] = idx + 1; });
-
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <table>
-        <thead>
-          <tr>
-            <th>Dimensions</th>
-            <th>Evaluation indicators</th>
-            {INDICATOR_ORDER.map((col) => <th key={col}>{col}</th>)}
-            <th>Priority</th>
-          </tr>
-        </thead>
-        <tbody>
-          {DIM_GROUPS.flatMap(({ dim, indicators }) =>
-            indicators.map((indicator, rowIdx) => {
-              const rankingItem = result.ranking.find((item) => item[0] === indicator);
-              if (!rankingItem) return null;
-              const weight = rankingItem[1].toFixed(4);
-              return (
-                <tr key={indicator}>
-                  {rowIdx === 0 && (
-                    <td
-                      rowSpan={indicators.length}
-                      style={{ fontWeight: "bold", verticalAlign: "middle", borderRight: "1px solid #ccc" }}
-                    >
-                      {dim}
-                    </td>
-                  )}
-                  <td style={{ textAlign: "left", paddingLeft: "8px" }}>{indicator}</td>
-                  {INDICATOR_ORDER.map((col) => (
-                    <td
-                      key={col}
-                      style={{
-                        backgroundColor: col === indicator ? "#fff8e1" : "inherit",
-                        fontWeight: col === indicator ? "bold" : "normal",
-                      }}
-                    >
-                      {weight}
-                    </td>
-                  ))}
-                  <td style={{ fontWeight: "bold" }}>{priorityMap[indicator]}</td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-/** Figure 3: Radar chart of indicator weights sorted by canonical INDICATOR_ORDER. */
-function RadarAnalysis({ result, matrixMode }) {
-  if (!result?.ranking) return null;
-
-  const decimals  = matrixMode === "4x4" ? 3 : 4;
-  const radarData = [...result.ranking]
-    .sort((a, b) => INDICATOR_ORDER.indexOf(a[0]) - INDICATOR_ORDER.indexOf(b[0]))
-    .map((item) => ({
-      indicator: item[0].split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" "),
-      weight: parseFloat(item[1].toFixed(decimals)),
-    }));
-
-  return (
-    <div style={{ marginTop: "20px", textAlign: "center" }}>
-      <h2>Figure 3: Radar analysis diagram of the core resources and impact indicators for the development of affiliated restaurants.</h2>
-      <div style={{ display: "flex", justifyContent: "center", marginTop: "15px" }}>
-        <RadarChart width={700} height={500} data={radarData}>
-          <PolarGrid
-            gridType="polygon"
-            stroke="#555" strokeWidth={1}
-            polarRadius={[25, 50, 75, 100, 125, 150, 175, 200]}
-          />
-          <PolarAngleAxis
-            dataKey="indicator"
-            tick={{ fontFamily: "Times New Roman", fontSize: 11, fill: "#000" }}
-          />
-          <PolarRadiusAxis
-            tick={{ fontFamily: "Times New Roman", fontSize: 10, fill: "#000" }}
-            domain={[0, 0.4]} tickCount={9}
-            tickFormatter={(v) => v.toFixed(2)}
-          />
-          <Radar
-            name="Weight" dataKey="weight"
-            stroke="#1e88e5" fill="#1e88e5" fillOpacity={0.3}
-            isAnimationActive={true}
-            dot={{ fill: "#1e88e5", r: 5, strokeWidth: 1.5, stroke: "#0d5ba8" }}
-            strokeWidth={2.5}
-          />
-          <Tooltip
-            formatter={(v) => v.toFixed(decimals)}
-            contentStyle={{ fontFamily: "Times New Roman", fontSize: 12, border: "1px solid #000", borderRadius: "0px" }}
-            labelStyle={{ fontFamily: "Times New Roman", fontSize: 12 }}
-          />
-        </RadarChart>
-      </div>
-    </div>
-  );
-}
+import { DIMENSIONS_4X4, DIMENSIONS_8X8, DIM_GROUPS, EXAMPLE_4X4, EXAMPLE_8X8 } from "./constants";
+import ModeSelector from "./components/ModeSelector";
+import MatrixInputTable from "./components/MatrixInputTable";
+import TotalInfluenceTable from "./components/TotalInfluenceTable";
+import ProminenceRelationTable from "./components/ProminenceRelationTable";
+import CauseEffectDiagram from "./components/CauseEffectDiagram";
+import WeightRankingTable from "./components/WeightRankingTable";
+import RadarAnalysis from "./components/RadarAnalysis";
+import GapAnalysis from "./components/GapAnalysis";
+import DimensionWeightReferenceTable from "./components/DimensionWeightReferenceTable";
+import DanpInterpretation from "./components/DanpInterpretation";
 
 // ─── Main App Component ───────────────────────────────────────────────────────
 
+const createEmptyMatrix = (size) =>
+  Array.from({ length: size }, (_, i) =>
+    Array.from({ length: size }, (_, j) => (i === j ? 0 : ""))
+  );
+
+const referencePaperPath = "/docs/Mathematical Problems in Engineering - 2022 - Chen - Integrating the MCDM Method to Explore the Business Model Innovation.pdf";
+
 function App() {
+  const [activeTab, setActiveTab] = useState("input");
+  const [influenceMode, setInfluenceMode] = useState("4x4");
+  const [showReferenceModal, setShowReferenceModal] = useState(false);
+
   // Separate matrix / result state per mode so switching modes preserves data
   const [matrixMode, setMatrixMode] = useState("4x4");
-  const [matrix4x4,  setMatrix4x4]  = useState(() => Array(4).fill(null).map(() => Array(4).fill(0)));
-  const [matrix8x8,  setMatrix8x8]  = useState(() => Array(8).fill(null).map(() => Array(8).fill(0)));
+  const [matrix4x4,  setMatrix4x4]  = useState(() => createEmptyMatrix(4));
+  const [matrix8x8,  setMatrix8x8]  = useState(() => createEmptyMatrix(8));
   const [result4x4,  setResult4x4]  = useState(null);
   const [result8x8,  setResult8x8]  = useState(null);
   const [loading,    setLoading]    = useState(false);
-  const [jsonInput,  setJsonInput]  = useState("");
+  const [matrixError, setMatrixError] = useState(null);
 
   // Exact dot pixel positions captured from recharts shape callback
   const dotPositionsRef = useRef({});
   const [dotPositions, setDotPositions] = useState({});
 
   // ── Derived values for the currently active mode ──────────────────────────
-  const labels    = matrixMode === "4x4" ? DIMENSIONS_4X4 : DIMENSIONS_8X8;
-  const matrix    = matrixMode === "4x4" ? matrix4x4 : matrix8x8;
-  const setMatrix = matrixMode === "4x4" ? setMatrix4x4 : setMatrix8x8;
-  const result    = matrixMode === "4x4" ? result4x4 : result8x8;
-  const setResult = matrixMode === "4x4" ? setResult4x4 : setResult8x8;
+  const labels           = matrixMode === "4x4" ? DIMENSIONS_4X4 : DIMENSIONS_8X8;
+  const matrix           = matrixMode === "4x4" ? matrix4x4 : matrix8x8;
+  const setMatrix        = matrixMode === "4x4" ? setMatrix4x4 : setMatrix8x8;
+  const influenceLabels  = influenceMode === "4x4" ? DIMENSIONS_4X4 : DIMENSIONS_8X8;
+  const influenceResult  = influenceMode === "4x4" ? result4x4 : result8x8;
 
-  // Clear stale dot positions whenever the result changes (new layout expected).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Clear stale dot positions whenever a different influence view is shown.
   useEffect(() => {
     dotPositionsRef.current = {};
     setDotPositions({});
-  }, [result]);
+  }, [influenceMode, influenceResult]);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
   const handleReset = () => {
     if (matrixMode === "4x4") {
-      setMatrix4x4(Array(4).fill(null).map(() => Array(4).fill(0)));
+      setMatrix4x4(createEmptyMatrix(4));
       setResult4x4(null);
     } else {
-      setMatrix8x8(Array(8).fill(null).map(() => Array(8).fill(0)));
+      setMatrix8x8(createEmptyMatrix(8));
       setResult8x8(null);
     }
+    setMatrixError(null);
   };
 
   const handleCellChange = (i, j, value) => {
     const updated = matrix.map((row) => [...row]);
-    updated[i][j] = parseFloat(value) || 0;
+    updated[i][j] = value === "" ? "" : value;
     setMatrix(updated);
+    if (matrixError) setMatrixError(null);
   };
 
-  const handleLoadExample = (exampleData) => {
-    setJsonInput(JSON.stringify(exampleData, null, 2));
+  const handleModeChange = (mode) => {
+    setMatrixMode(mode);
+    setMatrixError(null);
   };
 
-  const handleImportJSON = () => {
-    try {
-      const data = JSON.parse(jsonInput);
-      if (!data.matrix || !data.labels || !data.mode) {
-        alert("JSON must contain: mode, labels, and matrix");
-        return;
+  const handleLoadExample = () => {
+    const example = matrixMode === "4x4" ? EXAMPLE_4X4 : EXAMPLE_8X8;
+    if (matrixMode === "4x4") { setMatrix4x4(example.matrix); setResult4x4(null); }
+    else { setMatrix8x8(example.matrix); setResult8x8(null); }
+    setMatrixError(null);
+  };
+
+  const buildDimensionMapping = (targetLabels) =>
+    targetLabels.map((label) => {
+      const indicatorIndex = DIM_GROUPS.findIndex(({ indicators }) =>
+        indicators.some((ind) => ind.toLowerCase() === label.toLowerCase())
+      );
+      if (indicatorIndex >= 0) return indicatorIndex;
+      const dimensionIndex = DIM_GROUPS.findIndex(({ dim }) =>
+        dim.toLowerCase() === label.toLowerCase()
+      );
+      return dimensionIndex >= 0 ? dimensionIndex : targetLabels.indexOf(label);
+    });
+
+  const validateAndPrepareMatrix = (rawMatrix, modeName) => {
+    for (let i = 0; i < rawMatrix.length; i += 1) {
+      for (let j = 0; j < rawMatrix[i].length; j += 1) {
+        if (i === j) continue;
+        const rawValue = rawMatrix[i][j];
+        if (rawValue === "" || rawValue === null || rawValue === undefined) {
+          return {
+            isValid: false,
+            error: `Please complete the ${modeName} matrix before analyzing. Use values from 0 to 4.`,
+          };
+        }
+        const numericValue = Number(rawValue);
+        if (!Number.isFinite(numericValue) || numericValue < 0 || numericValue > 4) {
+          return {
+            isValid: false,
+            error: `The ${modeName} matrix has invalid values. Each influence score must be between 0 and 4.`,
+          };
+        }
       }
-      if (data.matrix.length !== data.labels.length) {
-        alert("Matrix size must match number of labels");
-        return;
-      }
-      if (data.mode !== matrixMode) setMatrixMode(data.mode);
-      if (data.mode === "4x4") { setMatrix4x4(data.matrix); setResult4x4(null); }
-      else if (data.mode === "8x8") { setMatrix8x8(data.matrix); setResult8x8(null); }
-      alert("Data imported successfully!");
-      setJsonInput("");
-    } catch (err) {
-      alert("Invalid JSON: " + err.message);
     }
+
+    const numericMatrix = rawMatrix.map((row, i) =>
+      row.map((value, j) => (i === j ? 0 : Number(value)))
+    );
+
+    const allZero = numericMatrix.every((row, i) => row.every((val, j) => i === j || val === 0));
+    if (allZero) {
+      return {
+        isValid: false,
+        error: `The ${modeName} matrix cannot be all zeros. Please enter at least one non-zero influence value.`,
+      };
+    }
+
+    return { isValid: true, matrix: numericMatrix };
   };
 
   const handleAnalyze = async () => {
+    const modeChecks = matrixMode === "4x4"
+      ? [
+          { mode: "4x4", name: "4x4 Dimensions", matrix: matrix4x4 },
+          { mode: "8x8", name: "8x8 Indicators", matrix: matrix8x8 },
+        ]
+      : [
+          { mode: "8x8", name: "8x8 Indicators", matrix: matrix8x8 },
+          { mode: "4x4", name: "4x4 Dimensions", matrix: matrix4x4 },
+        ];
+
+    const prepared = {};
+    for (const check of modeChecks) {
+      const validation = validateAndPrepareMatrix(check.matrix, check.name);
+      if (!validation.isValid) {
+        setMatrixMode(check.mode);
+        setActiveTab("input");
+        setMatrixError(validation.error);
+        return;
+      }
+      prepared[check.mode] = validation.matrix;
+    }
+
+    setMatrixError(null);
     setLoading(true);
     try {
       const apiUrl = import.meta.env.VITE_API_URL || "/api";
-      const res = await axios.post(`${apiUrl}/analyze`, { matrix, labels });
-      setResult(res.data);
+
+      const [res4, res8] = await Promise.all([
+        axios.post(`${apiUrl}/analyze`, {
+          matrix: prepared["4x4"],
+          labels: DIMENSIONS_4X4,
+          dimension_mapping: buildDimensionMapping(DIMENSIONS_4X4),
+        }),
+        axios.post(`${apiUrl}/analyze`, {
+          matrix: prepared["8x8"],
+          labels: DIMENSIONS_8X8,
+          dimension_mapping: buildDimensionMapping(DIMENSIONS_8X8),
+        }),
+      ]);
+
+      setResult4x4(res4.data);
+      setResult8x8(res8.data);
+      setInfluenceMode(matrixMode);
+      setActiveTab("influence");
     } catch (err) {
       alert(err.response?.data?.detail ?? "Backend connection error. Make sure FastAPI is running.");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   // ── Scatter data derived from current analysis result ─────────────────────
 
-  const scatterData = result
-    ? labels.map((label, i) => ({
+  const scatterData = influenceResult
+    ? influenceLabels.map((label, i) => ({
         name:       label,
-        prominence: parseFloat(result.prominence[i].toFixed(4)),
-        relation:   parseFloat(result.relation[i].toFixed(4)),
-        type:       result.relation[i] > 0 ? "Cause" : "Effect",
-        fill:       result.relation[i] > 0 ? "#d32f2f" : "#1e88e5",
+        prominence: parseFloat(influenceResult.prominence[i].toFixed(4)),
+        relation:   parseFloat(influenceResult.relation[i].toFixed(4)),
+        type:       influenceResult.relation[i] > 0 ? "Cause" : "Effect",
+        fill:       influenceResult.relation[i] > 0 ? "#d32f2f" : "#1e88e5",
       }))
     : [];
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ maxWidth: "1200px", margin: "0 auto", padding: "20px" }}>
-      <h1>DEMATEL + DANP Decision Support System</h1>
+    <div style={{ minHeight: "100vh", backgroundColor: "#f8fafc" }}>
+      <header
+        style={{
+          height: "64px",
+          backgroundColor: "#ffffff",
+          boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)",
+          position: "sticky",
+          top: 0,
+          zIndex: 10,
+        }}
+      >
+        <div
+          style={{
+            maxWidth: "1240px",
+            margin: "0 auto",
+            padding: "0 20px",
+            height: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ fontWeight: 800, color: "#0f172a", fontSize: 22 }}>
+            Hybrid MCDM Decision Support System for Restaurant Innovation
+          </div>
+          <button
+            onClick={() => setShowReferenceModal(true)}
+            style={{
+              border: "1px solid #cbd5e1",
+              backgroundColor: "#ffffff",
+              color: "#1e3a8a",
+              borderRadius: "999px",
+              padding: "7px 14px",
+              fontWeight: 600,
+            }}
+            title="Open reference paper information"
+          >
+            Help: Reference Paper
+          </button>
+        </div>
+      </header>
 
-      <ModeSelector matrixMode={matrixMode} onModeChange={setMatrixMode} onReset={handleReset} />
+      {showReferenceModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 30,
+            padding: "16px",
+          }}
+          onClick={() => setShowReferenceModal(false)}
+        >
+          <div
+            style={{
+              width: "min(680px, 100%)",
+              backgroundColor: "#ffffff",
+              borderRadius: "14px",
+              boxShadow: "0 20px 30px -12px rgba(15, 23, 42, 0.35)",
+              padding: "20px",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
+              <h2 style={{ margin: 0, textAlign: "left", color: "#0f172a" }}>Reference Paper</h2>
+              <button
+                onClick={() => setShowReferenceModal(false)}
+                style={{ border: "1px solid #cbd5e1", borderRadius: "8px", padding: "6px 12px", backgroundColor: "#fff" }}
+              >
+                Close
+              </button>
+            </div>
+            <p style={{ marginTop: "12px", marginBottom: 0 }}>
+              This system is mainly based on the model from Chen (2022). Please read the paper for full methodological context before interpreting the results.
+            </p>
+            <a
+              href={encodeURI(referencePaperPath)}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ display: "inline-block", marginTop: "12px", fontWeight: 700, color: "#0c4a6e" }}
+              title="Open reference paper (PDF)"
+            >
+              Read the Reference PDF
+            </a>
+          </div>
+        </div>
+      )}
 
-      <JsonImportPanel
-        jsonInput={jsonInput}
-        onChange={setJsonInput}
-        onLoadExample={handleLoadExample}
-        onImport={handleImportJSON}
-      />
+      <div style={{ maxWidth: "1240px", margin: "22px auto", padding: "0 20px 28px" }}>
+        <div
+          style={{
+            backgroundColor: "#ffffff",
+            borderRadius: "16px",
+            boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.1)",
+            padding: "20px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              marginBottom: "20px",
+            }}
+          >
+            <div
+              style={{
+                display: "inline-flex",
+                padding: "4px",
+                backgroundColor: "#e2e8f0",
+                borderRadius: "999px",
+                gap: "4px",
+              }}
+            >
+              <button
+                onClick={() => setActiveTab("input")}
+                style={{
+                  borderRadius: "999px",
+                  border: "1px solid transparent",
+                  backgroundColor: activeTab === "input" ? "#ffffff" : "transparent",
+                  color: activeTab === "input" ? "#0f172a" : "#475569",
+                  boxShadow: activeTab === "input" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                  fontWeight: activeTab === "input" ? 700 : 600,
+                }}
+              >
+                Input Matrix
+              </button>
+              <button
+                onClick={() => setActiveTab("influence")}
+                style={{
+                  borderRadius: "999px",
+                  border: "1px solid transparent",
+                  backgroundColor: activeTab === "influence" ? "#ffffff" : "transparent",
+                  color: activeTab === "influence" ? "#0f172a" : "#475569",
+                  boxShadow: activeTab === "influence" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                  fontWeight: activeTab === "influence" ? 700 : 600,
+                }}
+              >
+                Influence Analysis
+              </button>
+              <button
+                onClick={() => setActiveTab("priority")}
+                style={{
+                  borderRadius: "999px",
+                  border: "1px solid transparent",
+                  backgroundColor: activeTab === "priority" ? "#ffffff" : "transparent",
+                  color: activeTab === "priority" ? "#0f172a" : "#475569",
+                  boxShadow: activeTab === "priority" ? "0 1px 2px rgba(0,0,0,0.1)" : "none",
+                  fontWeight: activeTab === "priority" ? 700 : 600,
+                }}
+              >
+                Priority Ranking
+              </button>
+            </div>
+          </div>
 
-      <MatrixInputTable
-        labels={labels}
-        matrix={matrix}
-        onChange={handleCellChange}
-        onAnalyze={handleAnalyze}
-        loading={loading}
-      />
-
-      {result && (
+      {activeTab === "input" && (
         <>
-          <TotalInfluenceTable labels={labels} result={result} matrixMode={matrixMode} />
-          <ProminenceRelationTable labels={labels} result={result} matrixMode={matrixMode} />
-          <CauseEffectDiagram
-            scatterData={scatterData}
-            matrixMode={matrixMode}
-            dotPositionsRef={dotPositionsRef}
-            dotPositions={dotPositions}
-            setDotPositions={setDotPositions}
-          />
+          <ModeSelector matrixMode={matrixMode} onModeChange={handleModeChange} />
 
-          {matrixMode === "8x8" && (
-            <div style={{ border: "1px solid #000", padding: "15px", marginTop: "20px" }}>
-              <h2>Table 11: List for indicator extreme supermatrices.</h2>
-              <WeightRankingTable result={result} />
-              <RadarAnalysis result={result} matrixMode={matrixMode} />
+          <MatrixInputTable
+            labels={labels}
+            matrix={matrix}
+            onChange={handleCellChange}
+            onAnalyze={handleAnalyze}
+            onLoadExample={handleLoadExample}
+            onClear={handleReset}
+            loading={loading}
+            error={matrixError}
+          />
+        </>
+      )}
+
+      {activeTab === "influence" && (
+        <>
+          {/* ── Info banner ── */}
+          <div
+            style={{
+              backgroundColor: "#eff6ff",
+              border: "1px solid #bfdbfe",
+              borderLeft: "4px solid #2563eb",
+              borderRadius: "10px",
+              padding: "12px 16px",
+              marginBottom: "20px",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+            }}
+          >
+            <span style={{ fontSize: 18 }}>📊</span>
+            <p style={{ margin: 0, color: "#1e3a8a", fontSize: 14, fontWeight: 500 }}>
+              Compute and investigate cause-and-effect relationships and correlations of the affiliated restaurants' core resources and impact indicators.
+            </p>
+          </div>
+
+          {/* ── Mode segmented control ── */}
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: "24px" }}>
+            <div
+              style={{
+                display: "inline-flex",
+                padding: "4px",
+                backgroundColor: "#e2e8f0",
+                borderRadius: "999px",
+                gap: "4px",
+              }}
+            >
+              {[
+                { key: "4x4", label: "Dimensions" },
+                { key: "8x8", label: "Indicators" },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setInfluenceMode(key)}
+                  style={{
+                    borderRadius: "999px",
+                    border: "1px solid transparent",
+                    backgroundColor: influenceMode === key ? "#ffffff" : "transparent",
+                    color: influenceMode === key ? "#0f172a" : "#475569",
+                    boxShadow: influenceMode === key ? "0 1px 3px rgba(0,0,0,0.12)" : "none",
+                    fontWeight: influenceMode === key ? 700 : 500,
+                    fontSize: 14,
+                    padding: "7px 22px",
+                    cursor: "pointer",
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {influenceResult ? (
+            <>
+              <TotalInfluenceTable labels={influenceLabels} result={influenceResult} matrixMode={influenceMode} />
+              <ProminenceRelationTable labels={influenceLabels} result={influenceResult} matrixMode={influenceMode} />
+              <CauseEffectDiagram
+                scatterData={scatterData}
+                matrixMode={influenceMode}
+                dotPositionsRef={dotPositionsRef}
+                dotPositions={dotPositions}
+                setDotPositions={setDotPositions}
+              />
+              <GapAnalysis result={influenceResult} labels={influenceLabels} matrixMode={influenceMode} />
+            </>
+          ) : (
+            <div
+              style={{
+                backgroundColor: "#ffffff",
+                border: "1px solid #e2e8f0",
+                borderRadius: "16px",
+                boxShadow: "0 4px 6px -1px rgba(0,0,0,0.07)",
+                padding: "48px 24px",
+                marginBottom: "20px",
+                textAlign: "center",
+              }}
+            >
+              <div style={{ fontSize: 40, marginBottom: "12px" }}>🔍</div>
+              <h2 style={{ color: "#0f172a", fontWeight: 700, fontSize: 18, margin: "0 0 8px 0", textAlign: "center" }}>
+                {influenceMode === "4x4" ? "No Dimension Analysis Yet" : "No Indicator Analysis Yet"}
+              </h2>
+              <p style={{ fontSize: 14, color: "#64748b", margin: 0 }}>
+                Go to <strong>Input Matrix</strong>, fill in the{" "}
+                {influenceMode === "4x4" ? "4×4 Dimensions" : "8×8 Indicators"} values, then click{" "}
+                <strong>Analyze</strong>.
+              </p>
+              <button
+                onClick={() => setActiveTab("input")}
+                style={{
+                  marginTop: "20px",
+                  padding: "9px 24px",
+                  background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: "999px",
+                  fontWeight: 600,
+                  fontSize: 14,
+                  cursor: "pointer",
+                  boxShadow: "0 4px 10px rgba(37,99,235,0.3)",
+                }}
+              >
+                Go to Input Matrix
+              </button>
             </div>
           )}
         </>
       )}
+
+      {activeTab === "priority" && (
+        <>
+          {/* ── Info banner ── */}
+          <div
+            style={{
+              backgroundColor: "#eff6ff",
+              border: "1px solid #bfdbfe",
+              borderLeft: "4px solid #2563eb",
+              borderRadius: "10px",
+              padding: "12px 16px",
+              marginBottom: "20px",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+            }}
+          >
+            <span style={{ fontSize: 18 }}>🏆</span>
+            <p style={{ margin: 0, color: "#1e3a8a", fontSize: 14, fontWeight: 500 }}>
+              Construct Affiliated Restaurants’ Core Resources and Impact Indicators and to Conduct the Analysis of Weights as Well as the Importance of Priority Rankings.
+            </p>
+          </div>
+
+          <DimensionWeightReferenceTable result4x4={result4x4} result8x8={result8x8} />
+
+          {result8x8 ? (
+            <>
+              <WeightRankingTable result={result8x8} />
+              <RadarAnalysis result={result8x8} matrixMode="8x8" result4x4={result4x4} />
+              <DanpInterpretation result8x8={result8x8} />
+            </>
+          ) : (
+            <div
+              style={{
+                backgroundColor: "#ffffff",
+                border: "1px solid #e2e8f0",
+                borderRadius: "16px",
+                boxShadow: "0 4px 6px -1px rgba(0,0,0,0.07)",
+                padding: "48px 24px",
+                marginBottom: "20px",
+                textAlign: "center",
+              }}
+            >
+              <div style={{ fontSize: 40, marginBottom: "12px" }}>🏆</div>
+              <h2 style={{ color: "#0f172a", fontWeight: 700, fontSize: 18, margin: "0 0 8px 0", textAlign: "center" }}>
+                No Priority Ranking Yet
+              </h2>
+              <p style={{ fontSize: 14, color: "#64748b", margin: 0 }}>
+                Go to <strong>Input Matrix</strong>, complete the{" "}
+                <strong>8×8 Indicators</strong> matrix, then click <strong>Analyze</strong>.
+              </p>
+              <button
+                onClick={() => setActiveTab("input")}
+                style={{
+                  marginTop: "20px",
+                  padding: "9px 24px",
+                  background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: "999px",
+                  fontWeight: 600,
+                  fontSize: 14,
+                  cursor: "pointer",
+                  boxShadow: "0 4px 10px rgba(37,99,235,0.3)",
+                }}
+              >
+                Go to Input Matrix
+              </button>
+            </div>
+          )}
+        </>
+      )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -155,6 +155,10 @@ VITE_API_URL=https://your-backend-url.com
 ### Backend
 - None required for basic setup
 - Can add: `DEBUG=False`, `CORS_ORIGINS=https://your-frontend-url.com` (if needed)
+- `OLLAMA_HOST` — Ollama server URL (default: `http://localhost:11434`)
+- `OLLAMA_MODEL` — Override default model (default: `llama3.2`)
+
+> ⚠️ **Ollama AI features are not yet deployed.** The `/gap-analysis` and `/interpret-danp` AI report endpoints require Ollama running on the same machine as the backend. They work locally but are not available in the deployed version until a hosted Ollama-compatible LLM service is configured.
 
 ---
 
