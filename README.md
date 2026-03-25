@@ -5,6 +5,7 @@ Hybrid MCDM Decision Support System for Restaurant Innovation
 
 **Stack:** FastAPI + React 19 + Vite + NumPy + Recharts + Axios + Ollama (LLM)  
 **Reference:** [Chen et al. (2022)](https://onlinelibrary.wiley.com/doi/10.1155/2022/9527219)
+**Simulated Website:** https://general-study-project-3ueg.vercel.app/  
 
 ---
 
