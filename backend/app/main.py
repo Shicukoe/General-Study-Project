@@ -235,7 +235,7 @@ async def gap_analysis(data: GapAnalysisInput):
         f"explain what any differences imply for business strategy, and give one specific actionable recommendation."
     )
 
-    return await generate_ollama_report(prompt=prompt, timeout=90.0)
+    return generate_ollama_report(prompt=prompt, timeout=90.0)
 
 
 # ─── /interpret-danp ─────────────────────────────────────────────────────────
@@ -307,7 +307,7 @@ async def interpret_danp(data: InterpretDanpInput):
     )
 
     # ── 4. Call Ollama ────────────────────────────────────────────────────
-    ollama_result = await generate_ollama_report(
+    ollama_result = generate_ollama_report(
         prompt=prompt,
         requested_model=data.model,
         timeout=120.0,

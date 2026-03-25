@@ -1,101 +1,128 @@
 import os
+from pathlib import Path
 
-import httpx
+from groq import Groq
 from fastapi import HTTPException
 
-MODEL_PRIORITY = ["llama3.2", "llama3.1", "llama3", "qwen2.5", "mistral", "phi3"]
 
+# Try to load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    # Look for .env in parent directory (backend folder)
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  
 
-def _normalize_model_name(name: str) -> str:
-    return name.split(":")[0].strip().lower()
+# Load configuration from environment variables
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
+# List of available models for interchange and fallback
+AVAILABLE_MODELS = [
+    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    # Add your remaining 31 models here as you expand
+]
 
-def _select_ollama_model(requested_model: str, available_models: list[str]) -> str | None:
-    if not available_models:
-        return None
+# Initialize Groq client only if API key is available
+client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-    requested_full = requested_model.strip().lower()
-    requested_base = _normalize_model_name(requested_model)
-
-    # 1) Full name exact match (e.g. llama3.2:latest)
-    for model in available_models:
-        if model.strip().lower() == requested_full:
-            return model
-
-    # 2) Base-name match ignoring tags (e.g. llama3.2)
-    for model in available_models:
-        if _normalize_model_name(model) == requested_base:
-            return model
-
-    # 3) Preferred fallback list
-    by_base = {}
-    for model in available_models:
-        by_base.setdefault(_normalize_model_name(model), model)
-    for candidate in MODEL_PRIORITY:
-        if candidate in by_base:
-            return by_base[candidate]
-
-    # 4) Last resort: first available model
-    return available_models[0]
-
-
-async def generate_ollama_report(
+def generate_ollama_report(
     prompt: str,
     requested_model: str | None = None,
     timeout: float = 120.0,
 ) -> dict[str, str | bool]:
-    ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-    resolved_requested_model = requested_model or os.getenv("OLLAMA_MODEL", "llama3.2")
-
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            tags_resp = await client.get(f"{ollama_host}/api/tags")
-            tags_resp.raise_for_status()
-            available_models = [
-                model.get("name", "")
-                for model in tags_resp.json().get("models", [])
-                if model.get("name")
-            ]
-
-            selected_model = _select_ollama_model(resolved_requested_model, available_models)
-            if not selected_model:
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        "Ollama is running but no models are installed. "
-                        f"Install one with: ollama pull {resolved_requested_model}"
-                    ),
-                )
-
-            resp = await client.post(
-                f"{ollama_host}/api/generate",
-                json={"model": selected_model, "prompt": prompt, "stream": False},
+    """
+    Generate a report using Groq's API with the specified model.
+    Falls back to alternative models if the primary model is unavailable.
+    
+    Args:
+        prompt: The prompt to send to the model
+        requested_model: The requested model name (e.g., "llama-3.3-70b-versatile")
+        timeout: Timeout for the request in seconds
+    
+    Returns:
+        Dictionary with report, model info, and fallback status
+    """
+    
+    # Check if API key is configured
+    if not GROQ_API_KEY or not client:
+        raise HTTPException(
+            status_code=500,
+            detail="GROQ_API_KEY environment variable is not set. Please configure it in your .env file.",
+        )
+    
+    # Use requested model or default
+    selected_model = requested_model or GROQ_MODEL
+    
+    # Build list of models to try (primary first, then fallbacks)
+    models_to_try = [selected_model]
+    # Add other available models as fallbacks
+    for model in AVAILABLE_MODELS:
+        if model != selected_model:
+            models_to_try.append(model)
+    
+    last_error = None
+    
+    # Try each model in sequence
+    for attempt, model in enumerate(models_to_try):
+        try:
+            # Make request to Groq API
+            chat_completion = client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                model=model,
             )
-            resp.raise_for_status()
-
+            
+            response_text = chat_completion.choices[0].message.content
+            
             return {
-                "report": resp.json().get("response", "").strip(),
-                "model_requested": resolved_requested_model,
-                "model_used": selected_model,
-                "used_fallback_model": selected_model != resolved_requested_model,
+                "report": response_text.strip(),
+                "model_requested": requested_model or GROQ_MODEL,
+                "model_used": model,
+                "used_fallback_model": attempt > 0,
             }
-    except HTTPException:
-        raise
-    except httpx.ConnectError:
+        
+        except HTTPException:
+            # If it's already an HTTPException, re-raise immediately
+            raise
+        except Exception as exc:
+            last_error = exc
+            # Continue to next model if available
+            if attempt < len(models_to_try) - 1:
+                continue
+    
+    # All models failed - convert last error to HTTPException
+    error_msg = str(last_error) if last_error else "Unknown error"
+    
+    if "401" in error_msg or "Unauthorized" in error_msg:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Groq API key. Please check your GROQ_API_KEY environment variable.",
+        )
+    elif "rate_limit" in error_msg.lower() or "429" in error_msg:
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded. Please try again later.",
+        )
+    elif "connection" in error_msg.lower() or "connect" in error_msg.lower():
         raise HTTPException(
             status_code=503,
-            detail=(
-                f"Cannot connect to Ollama at {ollama_host}. "
-                "Make sure Ollama is running: open a terminal and run 'ollama serve', "
-                f"then ensure a model is available with 'ollama pull {resolved_requested_model}'."
-            ),
+            detail="Cannot connect to Groq API. Check your internet connection.",
         )
-    except httpx.TimeoutException:
+    elif "timeout" in error_msg.lower():
         raise HTTPException(
             status_code=504,
-            detail="Ollama request timed out. The model may still be loading. Try again in a moment.",
+            detail="Request to Groq API timed out. Try again in a moment.",
         )
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=502, detail=f"Ollama returned an error: {exc.response.text}")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"LLM error: {str(exc)}")
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail=f"All available models failed. Last error: {error_msg}",
+        )

@@ -365,5 +365,83 @@ class TestEdgeCases:
         assert np.isclose(np.sum(weights), 1.0)
 
 
+class TestGroqOllamaModel:
+    """Test online Ollama model (Groq) integration"""
+    
+    def test_groq_model_response_format(self):
+        """Test that Groq model returns correct response format"""
+        from app.ollama_client import generate_ollama_report
+        
+        prompt = "What is 2+2?"
+        result = generate_ollama_report(prompt)
+        
+        # Check response structure
+        assert isinstance(result, dict), "Response should be a dictionary"
+        assert "report" in result, "Response should have 'report' key"
+        assert "model_used" in result, "Response should have 'model_used' key"
+        assert "model_requested" in result, "Response should have 'model_requested' key"
+        assert "used_fallback_model" in result, "Response should have 'used_fallback_model' key"
+    
+    def test_groq_model_report_not_empty(self):
+        """Test that Groq model returns non-empty report"""
+        from app.ollama_client import generate_ollama_report
+        
+        prompt = "What is 2+2?"
+        result = generate_ollama_report(prompt)
+        
+        assert result["report"], "Report should not be empty"
+        assert len(result["report"]) > 0, "Report should have content"
+        assert isinstance(result["report"], str), "Report should be a string"
+    
+    def test_groq_model_simple_math(self):
+        """Test Groq model with simple math question"""
+        from app.ollama_client import generate_ollama_report
+        
+        prompt = "What is 2+2?"
+        result = generate_ollama_report(prompt)
+        
+        # Should contain "4" in the response
+        report = result["report"].lower()
+        assert "4" in report, "Math question should mention the answer"
+    
+    def test_groq_model_with_custom_model(self):
+        """Test Groq model with custom model parameter"""
+        from app.ollama_client import generate_ollama_report
+        
+        prompt = "Hello, how are you?"
+        model = "llama-3.3-70b-versatile"
+        result = generate_ollama_report(prompt, requested_model=model)
+        
+        assert result["model_used"] == model, "Should use requested model"
+        assert result["report"], "Should return non-empty response"
+    
+    def test_groq_model_multiple_prompts(self):
+        """Test Groq model with multiple different prompts"""
+        from app.ollama_client import generate_ollama_report
+        
+        test_prompts = [
+            "What is the capital of France?",
+            "Explain machine learning in one sentence.",
+            "What is 10 * 5?"
+        ]
+        
+        for prompt in test_prompts:
+            result = generate_ollama_report(prompt)
+            assert result["report"], f"Should return response for: {prompt}"
+            assert len(result["report"]) > 0, f"Response should not be empty for: {prompt}"
+    
+    def test_groq_model_response_consistency(self):
+        """Test that response format is consistent across calls"""
+        from app.ollama_client import generate_ollama_report
+        
+        prompt = "What is AI?"
+        result1 = generate_ollama_report(prompt)
+        result2 = generate_ollama_report(prompt)
+        
+        # Check that both responses have same structure
+        assert set(result1.keys()) == set(result2.keys()), "Response structure should be consistent"
+        assert result1["model_used"] == result2["model_used"], "Model used should be consistent"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
